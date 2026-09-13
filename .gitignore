@@ -15,3 +15,5 @@ config.json
 data/*.json
 assets/brand/
 branding/
+
+assets/background_music.mp3

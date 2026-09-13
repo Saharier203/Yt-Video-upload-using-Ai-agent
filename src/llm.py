@@ -9,6 +9,29 @@ import requests
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 
+def _extract_text_from_response(data: dict) -> str:
+    """Extract text from Gemini API response, handling both old and new formats."""
+    try:
+        candidates = data.get("candidates", [])
+        if not candidates:
+            raise RuntimeError("No candidates in response")
+        candidate = candidates[0]
+        content = candidate.get("content", {})
+        parts = content.get("parts", [])
+        if not parts:
+            # Some new models put text directly in content or have empty parts initially
+            finish_reason = candidate.get("finishReason", "")
+            if finish_reason == "MAX_TOKENS":
+                raise RuntimeError("Response truncated: maxOutputTokens too low")
+            raise RuntimeError(f"No content parts in response (finishReason: {finish_reason})")
+        for part in parts:
+            if "text" in part and part["text"]:
+                return part["text"]
+        raise RuntimeError("No text found in response parts")
+    except Exception as e:
+        raise RuntimeError(f"Failed to parse Gemini response: {e}")
+
+
 def _gemini(prompt: str, model: str, api_key: str) -> str:
     resp = requests.post(
         GEMINI_URL.format(model=model),
@@ -21,7 +44,7 @@ def _gemini(prompt: str, model: str, api_key: str) -> str:
     )
     resp.raise_for_status()
     data = resp.json()
-    return data["candidates"][0]["content"]["parts"][0]["text"]
+    return _extract_text_from_response(data)
 
 
 def _pollinations(prompt: str) -> str:
@@ -49,7 +72,7 @@ def _pollinations(prompt: str) -> str:
     return content
 
 
-FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-flash-lite-latest"]
+FALLBACK_MODELS = ["gemini-3.6-flash-lite", "gemini-flash-lite-latest"]
 
 
 def quality_model(config: dict) -> str:
