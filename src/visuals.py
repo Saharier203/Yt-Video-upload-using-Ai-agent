@@ -169,24 +169,47 @@ def scene_prompt_list(terms: list, prompts) -> list | None:
     return None
 
 def fetch_clips(search_terms: list, seconds_each: float, config: dict, workdir: Path,
-                ai_prompts: list | None = None, research: dict | None = None) -> list:
+                ai_prompts: list | None = None, research: dict | None = None,
+                scenes: list | None = None) -> list:
     """Return a list of raw clip paths, one per search term (order preserved).
-    
+
     Stock-first approach: 85% Pexels stock footage, 15% AI accents for supernatural elements.
     Entity caching: first AI image per legend cached and reused.
     Visual anchors: recurring objects (notebook, lamp, coffee) inserted as transitions.
     Enhanced relevance: search terms enriched with location/entity context.
+
+    If scenes is provided (from scene_director), uses per-scene durations and
+    search terms instead of the flat lists.
     """
     api_key = os.getenv("PEXELS_API_KEY", "").strip()
     video_cfg = config["video"]
     orientation = "portrait" if video_cfg["height"] > video_cfg["width"] else "landscape"
     fallback_terms = list(video_cfg.get("fallback_search_terms", []))
     random.shuffle(fallback_terms)
-    
+
     stock_primary = video_cfg.get("stock_primary", True)
     ai_ratio = float(video_cfg.get("ai_image_ratio", 0.15))
     entity_cache_enabled = video_cfg.get("entity_cache", True)
     visual_anchors = video_cfg.get("visual_anchors", [])
+
+    # Use scene list if available, otherwise fall back to flat lists
+    if scenes:
+        scene_search_terms = []
+        scene_prompts = []
+        scene_durations = []
+        for s in scenes:
+            terms = s.get("search_terms", [])
+            if terms:
+                scene_search_terms.append(terms[0] if terms else "")
+            else:
+                scene_search_terms.append("")
+            scene_prompts.append(s.get("scene_prompt", ""))
+            scene_durations.append(s.get("duration_sec", seconds_each))
+        search_terms = [t for t in scene_search_terms if t] or search_terms
+        ai_prompts = scene_prompts or ai_prompts
+        per_scene_durations = scene_durations
+    else:
+        per_scene_durations = [seconds_each] * len(search_terms)
     
     paths = []
     used_ids: set = set()
@@ -203,13 +226,14 @@ def fetch_clips(search_terms: list, seconds_each: float, config: dict, workdir: 
     for i, term in enumerate(search_terms):
         out = workdir / f"raw_{i}.mp4"
         got = False
-        
+        clip_duration = per_scene_durations[i] if i < len(per_scene_durations) else seconds_each
+
         # Enhance search term with context
         enhanced_term = _enhance_search_term(term, "", research)
-        
+
         # Determine if this slot should be AI (supernatural element) or stock
         is_ai_slot = (not stock_primary) or (ai_ratio > 0 and i % max(1, round(1 / ai_ratio)) == 0)
-        
+
         # Check if this scene prompt describes a supernatural entity
         brief = ai_prompts[i] if ai_prompts and i < len(ai_prompts) else term
         is_entity_scene = any(keyword in brief.lower() for keyword in 
@@ -220,7 +244,7 @@ def fetch_clips(search_terms: list, seconds_each: float, config: dict, workdir: 
             if entity_image_path:
                 try:
                     from . import ai_images
-                    ai_images.ken_burns(entity_image_path, seconds_each, video_cfg["width"],
+                    ai_images.ken_burns(entity_image_path, clip_duration, video_cfg["width"],
                                         video_cfg["height"], video_cfg["fps"], out)
                     print(f"  Using cached entity visual: {entity_key}")
                     got = True
@@ -236,10 +260,10 @@ def fetch_clips(search_terms: list, seconds_each: float, config: dict, workdir: 
                     if "figure" in brief.lower() or "entity" in brief.lower():
                         entity_brief = f"pale humanoid figure, elongated proportions, standing in darkness, only eyes visible, analog horror aesthetic, VHS grain"
                     if ai_images.generate_scene_image(entity_brief, video_cfg["width"],
-                                                      video_cfg["height"], img,
-                                                      style=video_cfg.get("ai_style")):
+                                                       video_cfg["height"], img,
+                                                       style=video_cfg.get("ai_style")):
                         _save_entity_image(entity_key, img, video_cfg["width"], video_cfg["height"])
-                        ai_images.ken_burns(img, seconds_each, video_cfg["width"],
+                        ai_images.ken_burns(img, clip_duration, video_cfg["width"],
                                             video_cfg["height"], video_cfg["fps"], out)
                         print(f"  Generated and cached new entity visual: {entity_key}")
                         got = True

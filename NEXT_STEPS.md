@@ -11,6 +11,7 @@
 - [x] `assets/font.ttf` downloaded (Anton font)
 - [x] `SETUP_GUIDE.md` complete documentation
 - [x] `assets/README.md` with music/font instructions
+- [x] **Pipeline v2**: Humanizer, Scene Director, multi-layer SFX, delivery annotations
 
 ---
 
@@ -164,6 +165,10 @@ print('client_secret.json:', os.path.exists('client_secret.json'))
 print('token.json:', os.path.exists('token.json'))
 print('background_music.mp3:', os.path.exists('assets/background_music.mp3'))
 print('font.ttf:', os.path.exists('assets/font.ttf'))
+print('sfx/atmospheres:', os.path.exists('assets/sfx/atmospheres'))
+print('sfx/stingers:', os.path.exists('assets/sfx/stingers'))
+print('humanizer.py:', os.path.exists('src/humanizer.py'))
+print('scene_director.py:', os.path.exists('src/scene_director.py'))
 "
 ```
 

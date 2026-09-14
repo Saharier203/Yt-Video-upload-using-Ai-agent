@@ -2,6 +2,8 @@
 
 This guide walks you through setting up your fully automated AI horror channel on **E:\ai-horror-channel**.
 
+> **Pipeline v2**: Now includes a Humanizer (strips AI-isms, adds delivery annotations), Scene Director (timed visual segments), and multi-layer SFX system (atmosphere, foley, tension, stingers). See DOCUMENTATION.md for full details.
+
 ---
 
 ## 📋 Prerequisites Checklist

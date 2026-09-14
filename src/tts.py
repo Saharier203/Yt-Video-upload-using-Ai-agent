@@ -13,6 +13,7 @@ Features:
 - Natural punctuation-aware pauses
 - Explicit silence between sentences
 - Accurate word-level timestamps
+- Delivery annotations: [pause], [slower], [whisper], [emphasis]
 - Retry handling for temporary Edge TTS failures
 - Temporary-file cleanup
 - Pipeline-friendly interface
@@ -43,6 +44,40 @@ from pathlib import Path
 from typing import List, Dict, Tuple
 
 import edge_tts
+
+
+# ============================================================
+# DELIVERY ANNOTATIONS
+# ============================================================
+
+ANNOTATION_PATTERN = re.compile(r'\[(pause|slower|whisper|emphasis)\]')
+
+
+def _parse_annotations(text: str) -> Tuple[str, List[Dict]]:
+    """Parse delivery annotations from script text.
+
+    Returns (cleaned_text, per_sentence_annotations).
+    Each entry in per_sentence_annotations is a dict of annotation flags.
+    """
+    sentences = _split_sentences(text)
+    annotations = []
+
+    for sent in sentences:
+        flags = {"pause": False, "slower": False, "whisper": False, "emphasis": False}
+        for m in ANNOTATION_PATTERN.findall(sent):
+            if m in flags:
+                flags[m] = True
+        cleaned = ANNOTATION_PATTERN.sub('', sent).strip()
+        cleaned = re.sub(r'\s{2,}', ' ', cleaned)
+        annotations.append((cleaned, flags))
+
+    return annotations
+
+
+def _strip_annotations(text: str) -> str:
+    """Strip all delivery annotations from text."""
+    cleaned = ANNOTATION_PATTERN.sub('', text)
+    return re.sub(r'\s{2,}', ' ', cleaned).strip()
 
 
 # ============================================================
@@ -362,7 +397,8 @@ def _punctuation_pause(sentence: str) -> float:
 def _plan_prosody(
     sentences: List[str],
     base_rate: str,
-    base_pitch: str
+    base_pitch: str,
+    annotations: List[Dict] | None = None,
 ) -> List[Tuple[str, str, float, float]]:
     """
     Create horror-oriented prosody for every sentence.
@@ -389,6 +425,12 @@ def _plan_prosody(
         AFTERMATH
           ↓
         FINAL
+
+    If annotations are provided, they override the base prosody:
+        [pause]      -> extra 0.6s post_pause
+        [slower]     -> rate reduced by additional 8%
+        [whisper]    -> pitch dropped by additional 6Hz, rate -5%
+        [emphasis]   -> rate +3%, pitch +2Hz
     """
 
     total = len(sentences)
@@ -406,6 +448,8 @@ def _plan_prosody(
         punctuation_pause = _punctuation_pause(
             sentence
         )
+
+        ann = (annotations or [{}] * total)[min(i, len(annotations or []) - 1)] if annotations else {}
 
         # ====================================================
         # HOOK
@@ -542,6 +586,24 @@ def _plan_prosody(
             pre_pause = 0.80
 
             post_pause = 0.0
+
+        # ====================================================
+        # APPLY DELIVERY ANNOTATIONS
+        # ====================================================
+
+        if ann.get("pause"):
+            post_pause += 0.6
+
+        if ann.get("slower"):
+            rate = _fmt_rate(rate, -8)
+
+        if ann.get("whisper"):
+            pitch = _fmt_pitch(pitch, -6)
+            rate = _fmt_rate(rate, -5)
+
+        if ann.get("emphasis"):
+            rate = _fmt_rate(rate, 3)
+            pitch = _fmt_pitch(pitch, 2)
 
         plan.append(
             (
@@ -943,12 +1005,12 @@ def make_voiceover(
     )
 
     # ========================================================
-    # SPLIT SCRIPT
+    # SPLIT SCRIPT (with delivery annotation parsing)
     # ========================================================
 
-    sentences = _split_sentences(
-        text
-    )
+    annotated = _parse_annotations(text)
+    sentences = [cleaned for cleaned, _ in annotated]
+    per_sentence_ann = [flags for _, flags in annotated]
 
     if not sentences:
 
@@ -1009,7 +1071,8 @@ def make_voiceover(
     prosody = _plan_prosody(
         sentences,
         base_rate,
-        base_pitch
+        base_pitch,
+        annotations=per_sentence_ann,
     )
 
     all_words = []
@@ -1042,7 +1105,16 @@ def make_voiceover(
             sentence
         )
 
+        ann = per_sentence_ann[i] if i < len(per_sentence_ann) else {}
+        ann_tags = " ".join(f"[{k}]" for k, v in ann.items() if v)
         print(
+            f"[TTS] "
+            f"{i + 1:02d}/"
+            f"{len(sentences):02d} "
+            f"[{role.upper():9}] "
+            f"rate={rate} "
+            f"pitch={pitch}"
+            f" {ann_tags}" if ann_tags else
             f"[TTS] "
             f"{i + 1:02d}/"
             f"{len(sentences):02d} "
