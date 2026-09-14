@@ -34,14 +34,34 @@ def _probe_duration(path: Path) -> float:
 
 
 def _pick_music(mood: str | None) -> Path | None:
-    if not ASSETS_MUSIC.exists():
-        return None
-    if mood:
-        mood_tracks = sorted((ASSETS_MUSIC / mood.strip().lower()).glob("*.mp3"))
-        if mood_tracks:
-            return random.choice(mood_tracks)
-    any_tracks = sorted(ASSETS_MUSIC.rglob("*.mp3"))
-    return random.choice(any_tracks) if any_tracks else None
+    # Search both assets/music/ and assets/ root for MP3 files
+    search_dirs = []
+    if ASSETS_MUSIC.exists():
+        search_dirs.append(ASSETS_MUSIC)
+    assets_root = ROOT / "assets"
+    search_dirs.append(assets_root)
+
+    all_tracks = []
+    for d in search_dirs:
+        if mood:
+            mood_tracks = sorted((d / mood.strip().lower()).glob("*.mp3"))
+            all_tracks.extend(mood_tracks)
+        all_tracks.extend(sorted(d.rglob("*.mp3")))
+
+    # Filter: only music files (exclude sfx, tts, voice, old background_music)
+    skip_dirs = {"sfx", "foley", "stingers", "tension", "atmospheres", "ambient_beds"}
+    skip_names = {"tts", "voice", "background_music", "chair_scrape", "distant_dog_bark",
+                  "distant_siren", "door_creak", "floor_creak", "footsteps_gravel",
+                  "paper_rustle", "rain_on_window", "wind_howl"}
+    music_tracks = []
+    for t in all_tracks:
+        if any(part.lower() in skip_dirs for part in t.parts):
+            continue
+        if t.stem.lower() in skip_names or "sfx" in str(t).lower():
+            continue
+        music_tracks.append(t)
+
+    return random.choice(music_tracks) if music_tracks else None
 
 
 def _pick_sfx_ambient_bed(scene_prompts: list) -> Path | None:
@@ -171,113 +191,121 @@ def _extract_script_beats(script: str) -> list[dict]:
     return beats
 
 
-def _premix_audio_layers(workdir: Path, config: dict, script_beats: list, scene_prompts: list, voice_mp3: Path) -> Path | None:
-    """Pre-mix all audio layers into a single file to simplify final mix."""
+TRANSITIONS = ["fade", "fade", "smoothleft", "smoothright", "smoothup", "circleopen"]
+
+
+def _build_sfx_layers(workdir: Path, voice_dur: float, beats: list, scenes: list,
+                       config: dict) -> list[tuple[Path, float, str]]:
+    """Build SFX audio layers based on beats and scenes.
+
+    Returns list of (file_path, volume, label) tuples for mixing.
+    """
     v = config["video"]
-    music_vol = float(v.get("music_volume", 0.03))
-    ambient_bed_vol = float(v.get("ambient_bed_volume", 0.08))
     atmosphere_vol = float(v.get("atmosphere_volume", 0.12))
     foley_vol = float(v.get("foley_volume", 0.10))
     tension_vol = float(v.get("tension_volume", 0.08))
     stinger_vol = float(v.get("stinger_volume", 0.25))
-    music_vol = float(v.get("music_volume", 0.03))
-    
-    # Get voice duration
-    voice_dur = _probe_duration(voice_mp3)
-    total_dur = voice_dur + 0.6
-    
-    # Build all audio layer files
-    layer_files = []
-    layer_volumes = []
-    
-    # 1. Voice (reference)
-    layer_files.append(("voice", voice_mp3, 1.0))
-    
-    # 2. Ambient bed
-    ambient_bed = _pick_sfx_ambient_bed([])
-    if ambient_bed and ambient_bed.exists():
-        layer_files.append(("ambient", ambient_bed, ambient_bed_vol))
-    
-    # 3. Atmosphere (concatenated per scene)
-    atmosphere_segments = []
-    scene_prompts_list = scene_prompts or []
-    for prompt_dict in scene_prompts_list:
-        brief = prompt_dict if isinstance(prompt_dict, str) else prompt_dict.get("brief", "") if isinstance(prompt_dict, dict) else str(prompt_dict)
-        atmos_file = _pick_atmosphere_for_scene(brief)
-        if atmos_file and atmos_file.exists():
-            atmosphere_segments.append(atmos_file)
-    
-    if atmosphere_segments:
-        # Concatenate atmospheres
-        atmos_concat = Path("atmos_mix.wav")
-        concat_list = Path("atmos_concat.txt")
-        with open(concat_list, "w") as f:
-            for atm in atmosphere_segments:
-                safe = str(atm).replace("'", "'\\''")
-                f.write(f"file '{safe}'\n")
-        try:
-            subprocess.run([
-                "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list),
-                "-c:a", "pcm_s16le", str(atmos_concat)
-            ], check=True, capture_output=True, cwd=".", timeout=60)
-            layer_files.append(("atmosphere", atmos_concat, atmosphere_vol))
-        except:
-            pass
-    
-    # 4. Foley (concatenated)
-    foley_files = []
-    for beat in _extract_script_beats(""):  # We'll use script beats below
-        pass  # Filled below
-    
-    # Collect all foley from script beats
-    script_beats_full = _extract_script_beats("")  # placeholder
-    # Actually get foley from script beats
-    foley_files = []
-    for beat in _extract_script_beats(""):  # will be replaced
-        pass
-    
-    # Music
-    music = _pick_music(None)
-    if music and music.exists():
-        layer_files.append(("music", music, 0.03))
-    
-    # If we have multiple layers, mix them
-    if len(layer_files) > 1:
-        # Build filter for mixing
-        inputs = []
-        filter_parts = []
-        for i, (name, path, vol) in enumerate(layer_files):
-            if not Path(path).exists():
-                continue
-            filter_parts.append(f"[{i}:a]volume={vol}[a{i}]")
-        
-        # Build amix
-        mix_inputs = "".join([f"[a{i}]" for i in range(len(layer_files)) if Path(layer_files[i][1]).exists()])
-        filter_str = ";".join([f for f in filter_parts if f"[{f.split('[')[1][0]}:a]" in f])
-        # This is getting complex - let's use a simpler approach
-        
-    return None  # Simplified - skip premix for now
+    ambient_bed_vol = float(v.get("ambient_bed_volume", 0.08))
+
+    layers = []
+
+    # 1. Ambient bed (continuous, looped) — prefer dread_rumble for horror
+    beds = sorted((ASSETS_SFX / "ambient_beds").glob("*.wav"))
+    if beds:
+        horror_bed = ASSETS_SFX / "ambient_beds" / "dread_rumble.wav"
+        if horror_bed.exists():
+            layers.append((horror_bed, ambient_bed_vol, "ambient_bed"))
+        else:
+            layers.append((random.choice(beds), ambient_bed_vol, "ambient_bed"))
+
+    # 2. Atmosphere per scene
+    if scenes:
+        for i, scene in enumerate(scenes):
+            prompt = scene.get("scene_prompt", "") or scene.get("text", "")
+            dur = scene.get("duration_sec", voice_dur / max(1, len(scenes)))
+            atmos = _pick_atmosphere_for_scene(prompt)
+            if atmos and atmos.exists():
+                layers.append((atmos, atmosphere_vol, f"atmos_{i}"))
+    elif beats:
+        per_beat = voice_dur / max(1, len(beats))
+        for i, beat in enumerate(beats):
+            text = beat.get("text", "")
+            atmos = _pick_atmosphere_for_scene(text)
+            if atmos and atmos.exists():
+                layers.append((atmos, atmosphere_vol, f"atmos_{i}"))
+
+    # 3. Tension layers — continuous sub-rumble + beat-specific
+    sub_rumble = ASSETS_SFX / "tension" / "sub_rumble_8s.wav"
+    if sub_rumble.exists():
+        layers.append((sub_rumble, tension_vol * 0.7, "tension_sub_rumble"))
+    if beats:
+        for beat in beats:
+            beat_type = beat.get("beat", "body")
+            tension_files = _pick_tension_layer(beat_type)
+            for tf in tension_files:
+                layers.append((tf, tension_vol, f"tension_{beat_type}"))
+
+    # 4. Foley triggers from script text
+    full_text = " ".join(b.get("text", "") for b in beats) if beats else ""
+    foley_files = _pick_foley_for_trigger(full_text)
+    for ff in foley_files:
+        layers.append((ff, foley_vol, f"foley_{ff.stem}"))
+
+    # 5. Stingers at twist/climax beats — each gets its own stinger
+    if beats:
+        for beat in beats:
+            if beat.get("beat") in ("twist", "climax"):
+                stinger = _pick_stinger_for_twist()
+                if stinger and stinger.exists():
+                    layers.append((stinger, stinger_vol, f"stinger_{beat.get('beat')}_{beat.get('text', '')[:10]}"))
+
+    return layers
 
 
-TRANSITIONS = ["fade", "fade", "smoothleft", "smoothright", "smoothup", "circleopen"]
+def _build_audio_filter_complex(voice_idx: int, sfx_layers: list[tuple[Path, float, str]],
+                                 music_path: Path | None, music_vol: float,
+                                 voice_dur: float) -> tuple[list[str], list[str]]:
+    """Build ffmpeg filter_complex for multi-layer audio mixing.
+
+    Returns (input_args, filter_complex_list).
+    """
+    input_args = []
+    audio_filters = []
+    next_idx = voice_idx + 1
+
+    # Add SFX layers as inputs
+    sfx_labels = []
+    for sfx_path, vol, label in sfx_layers:
+        if not sfx_path.exists():
+            continue
+        input_args += ["-stream_loop", "-1", "-i", str(sfx_path)]
+        safe_label = re.sub(r'[^a-zA-Z0-9]', '_', label)
+        audio_filters.append(f"[{next_idx}:a]volume={vol},acompressor=threshold=-24dB:ratio=4:attack=50:release=300[{safe_label}]")
+        sfx_labels.append(f"[{safe_label}]")
+        next_idx += 1
+
+    # Add music
+    if music_path and music_path.exists():
+        input_args += ["-stream_loop", "-1", "-i", str(music_path)]
+        audio_filters.append(f"[{next_idx}:a]volume={music_vol},acompressor=threshold=-24dB:ratio=4:attack=50:release=300[music_ducked]")
+        sfx_labels.append("[music_ducked]")
+        next_idx += 1
+
+    return input_args, audio_filters, sfx_labels, next_idx
 
 
 def build_video(raw_clips: list, voice_mp3: Path, ass_file: Path, config: dict,
                 workdir: Path, out_file: Path, music_mood: str | None = None,
                 with_music: bool = True, with_logo: bool = True,
                 words: list | None = None, hook: str | None = None,
-                script: str | None = None, scene_prompts: list | None = None) -> Path:
+                script: str | None = None, scene_prompts: list | None = None,
+                beats: list | None = None, scenes: list | None = None) -> Path:
     v = config["video"]
     w, h, fps = v["width"], v["height"], v["fps"]
     td = float(v.get("transition_seconds", 0.35))
-    
-    # Volume levels (relative to voice at 1.0)
+
+    # Volume levels
     music_vol = float(v.get("music_volume", 0.03))
-    ambient_bed_vol = float(v.get("ambient_bed_volume", 0.08))
-    atmosphere_vol = float(v.get("atmosphere_volume", 0.12))
-    foley_vol = float(v.get("foley_volume", 0.10))
-    tension_vol = float(v.get("tension_volume", 0.08))
-    stinger_vol = float(v.get("stinger_volume", 0.25))
     logo_vol = float(config.get("branding", {}).get("sonic_logo_volume", 0.5))
 
     renderer = str(v.get("renderer", "remotion")).strip().lower()
@@ -287,7 +315,7 @@ def build_video(raw_clips: list, voice_mp3: Path, ass_file: Path, config: dict,
             try:
                 return remotion_render.render(
                     raw_clips, voice_mp3, words, hook, config, workdir, out_file,
-                    music=_pick_music(None) if with_music else None,
+                    music=_pick_music(music_mood) if with_music else None,
                     logo=_brand_logo(config) if with_logo else None)
             except Exception as e:
                 print(f"  Remotion render failed, falling back to ffmpeg: {e}")
@@ -297,135 +325,80 @@ def build_video(raw_clips: list, voice_mp3: Path, ass_file: Path, config: dict,
     audio_len = _probe_duration(voice_mp3)
     total = audio_len + 0.6
     n = len(raw_clips)
-    per_clip = (total + (n - 1) * 0.35) / n
+    per_clip = (total + (n - 1) * td) / n
 
-    # 1. Normalize every clip to identical codec/size/fps.
+    # 1. Normalize every clip to identical codec/size/fps
     norm_paths = []
     for i, raw in enumerate(raw_clips):
         norm = workdir / f"norm_{i}.mp4"
         _run([
             "ffmpeg", "-y", "-i", str(raw), "-t", f"{per_clip:.3f}",
             "-vf",
-            f"scale=1080:1920:force_original_aspect_ratio=increase,"
-            f"crop=1080:1920,fps=30,setsar=1",
+            f"scale={w}:{h}:force_original_aspect_ratio=increase,"
+            f"crop={w}:{h},fps={fps},setsar=1",
             "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26",
             "-pix_fmt", "yuv420p", str(norm),
         ], workdir)
         norm_paths.append(norm)
 
-    # SIMPLIFIED AUDIO MIX: Just voice + music + one ambient bed
-    music = _pick_music(None) if True else None
-    ambient_bed = None
-    beds = sorted((Path(__file__).resolve().parent.parent / "assets" / "sfx" / "ambient_beds").glob("*.wav"))
-    if beds:
-        ambient_bed = random.choice(beds)
-    
-    music_file = _pick_music(None) if True else None
-    
-    args = ["ffmpeg", "-y"]
-    for p in norm_paths:
-        args += ["-i", p.name]
-    voice_idx = n
-    args += ["-i", str(voice_mp3)]
-    next_idx = n + 1
-    
-    mix_sources = [f"[{n}:a]"]  # voice at full volume
-    audio_filters = []
-    next_idx = n + 1
-    
-    # Ambient bed
-    if ambient_bed and ambient_bed.exists():
-        args += ["-stream_loop", "-1", "-i", str(ambient_bed)]
-        audio_filters.append(f"[{next_idx}:a]volume=0.08,acompressor=threshold=-24dB:ratio=4:attack=50:release=300[bed_ducked]")
-        mix_sources.append("[bed_ducked]")
-        next_idx += 1
-    
-    # Music
-    music_file = _pick_music(None)
-    if music_file and music_file.exists():
-        args += ["-stream_loop", "-1", "-i", str(music_file)]
-        audio_filters.append(f"[{next_idx}:a]volume=0.03,acompressor=threshold=-24dB:ratio=4:attack=50:release=300[music_ducked]")
-        mix_sources.append("[music_ducked]")
-        next_idx += 1
-    
-    # Video filters
-    filters = []
-    td = 0.35
-    if n == 1:
-        filters.append(f"[0:v]ass=subs.ass[v]")
-    else:
-        prev = "[0:v]"
-        for i in range(1, n):
-            offset = i * (per_clip - 0.35)
-            label = f"[x{i}]" if i < n - 1 else "[xv]"
-            filters.append(f"{prev}[{i}:v]xfade=transition=fade:duration=0.350:offset={offset:.3f}{label}")
-            prev = label
-        filters.append(f"[xv]ass=subs.ass[v]")
-    
-    # Audio mix
-    if len(mix_sources) > 1:
-        filters.append(f"{''.join(mix_sources)}amix=inputs={len(mix_sources)}:duration=first:dropout_transition=0:normalize=0[a]")
-        audio_map = "[a]"
-    else:
-        audio_map = f"{n}:a"
-    
-    total = _probe_duration(voice_mp3) + 0.6
-    
+    # 2. Build SFX layers from beats/scenes
+    if not beats and script:
+        beats = _extract_script_beats(script)
+    sfx_layers = _build_sfx_layers(workdir, audio_len, beats or [], scenes or [], config)
+
+    # 3. Pick music
+    music_file = _pick_music(music_mood) if with_music else None
+
+    # 4. Build ffmpeg command
     args = ["ffmpeg", "-y"]
     for p in norm_paths:
         args += ["-stream_loop", "-1", "-i", p.name]
     args += ["-i", str(voice_mp3)]
-    # Add ambient bed
-    beds = sorted((Path(__file__).resolve().parent.parent / "assets" / "sfx" / "ambient_beds").glob("*.wav"))
-    if beds:
-        args += ["-stream_loop", "-1", "-i", str(random.choice(beds))]
-    # Add music
-    music_file = _pick_music(None)
+    next_idx = n + 1
+
+    # 5. Add SFX layers
+    audio_filters = []
+    mix_labels = [f"[{n}:a]"]  # voice is always index n
+
+    for sfx_path, vol, label in sfx_layers:
+        if not sfx_path.exists():
+            continue
+        args += ["-stream_loop", "-1", "-i", str(sfx_path)]
+        safe_label = re.sub(r'[^a-zA-Z0-9]', '_', label)
+        audio_filters.append(f"[{next_idx}:a]volume={vol},acompressor=threshold=-24dB:ratio=4:attack=50:release=300[{safe_label}]")
+        mix_labels.append(f"[{safe_label}]")
+        next_idx += 1
+
+    # 6. Add music
     if music_file and music_file.exists():
         args += ["-stream_loop", "-1", "-i", str(music_file)]
-    
-    # Build filters
+        audio_filters.append(f"[{next_idx}:a]volume={music_vol},acompressor=threshold=-24dB:ratio=4:attack=50:release=300[music_ducked]")
+        mix_labels.append("[music_ducked]")
+        next_idx += 1
+
+    # 7. Video crossfade filters
     filters = []
-    # Video crossfade
     if n == 1:
         filters.append(f"[0:v]ass={ass_file.name}[v]")
     else:
         prev = "[0:v]"
         for i in range(1, n):
-            offset = i * (per_clip - 0.35)
+            offset = i * (per_clip - td)
             label = f"[x{i}]" if i < n - 1 else "[xv]"
-            filters.append(f"{prev}[{i}:v]xfade=transition=fade:duration=0.350:offset={offset:.3f}{label}")
+            filters.append(f"{prev}[{i}:v]xfade=transition=fade:duration={td:.3f}:offset={offset:.3f}{label}")
             prev = label
-        filters.append(f"[xv]ass=subs.ass[v]")
-    
-    # Audio filters
-    audio_filters = []
-    voice_idx = len(norm_paths)
-    mix_sources = [f"[{voice_idx}:a]"]
-    next_idx = voice_idx + 1
-    
-    # Check for ambient bed
-    beds = sorted((Path(__file__).resolve().parent.parent / "assets" / "sfx" / "ambient_beds").glob("*.wav"))
-    if beds:
-        audio_filters.append(f"[{next_idx}:a]volume=0.08,acompressor=threshold=-24dB:ratio=4:attack=50:release=300[bed_ducked]")
-        mix_sources.append("[bed_ducked]")
-        next_idx += 1
-    
-    # Music
-    music_file = _pick_music(None)
-    if music_file and music_file.exists():
-        audio_filters.append(f"[{next_idx}:a]volume=0.03,acompressor=threshold=-24dB:ratio=4:attack=50:release=300[music_ducked]")
-        mix_sources.append("[music_ducked]")
-        next_idx += 1
-    
+        filters.append(f"[xv]ass={ass_file.name}[v]")
+
+    # 8. Audio mix
     filters.extend(audio_filters)
-    
-    if len(mix_sources) > 1:
-        filters.append(f"{''.join(mix_sources)}amix=inputs={len(mix_sources)}:duration=first:dropout_transition=0:normalize=0[a]")
+    if len(mix_labels) > 1:
+        mix_inputs = "".join(mix_labels)
+        filters.append(f"{mix_inputs}amix=inputs={len(mix_labels)}:duration=first:dropout_transition=0:normalize=0[a]")
         audio_map = "[a]"
     else:
-        audio_map = f"{len(norm_paths)}:a"
-    
+        audio_map = f"{n}:a"
+
+    # 9. Run ffmpeg
     args += ["-filter_complex", ";".join(filters), "-map", "[v]", "-map", audio_map,
              "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p",
              "-c:a", "aac", "-b:a", "192k", "-t", f"{_probe_duration(voice_mp3) + 0.6:.3f}", str(out_file)]

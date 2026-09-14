@@ -5,6 +5,7 @@ from datetime import date
 from pathlib import Path
 
 from . import llm
+from . import humanizer
 
 HISTORY_FILE = Path(__file__).resolve().parent.parent / "data" / "topics_history.json"
 
@@ -160,6 +161,14 @@ Return ONLY valid JSON, no markdown, exactly this shape:
   "description": "2-3 sentence description with a hook and 3-5 hashtags on the last line",
   "tags": ["8-12", "seo", "tags"],
   "script": "the full spoken script as one string",
+  "beats": [
+    {{"beat": "hook", "text": "the hook sentence(s)", "intensity": "high"}},
+    {{"beat": "setup", "text": "the setup sentence(s)", "intensity": "low"}},
+    {{"beat": "escalation", "text": "the escalation sentence(s)", "intensity": "medium"}},
+    {{"beat": "climax", "text": "the climax sentence(s)", "intensity": "high"}},
+    {{"beat": "twist", "text": "the twist sentence(s)", "intensity": "medium"}},
+    {{"beat": "linger", "text": "the linger sentence(s)", "intensity": "low"}}
+  ],
   "music_mood": "suspense",
   "comment": "a short question (under 20 words) to post as the channel's own comment, written to provoke replies and personal stories",
   "playlist": "exactly one of: {playlists}",
@@ -248,6 +257,32 @@ def generate_video_plan(config: dict, forced_topic: str | None = None) -> dict:
     )
     plan = llm.generate_json(write_prompt, config, model=qm)
 
+    # Pass 2.5 — humanizer: strip AI-isms, inject delivery annotations
+    raw_script = plan.get("script", "")
+    if raw_script and config.get("humanizer", {}).get("enabled", True):
+        try:
+            print("    humanizer: cleaning script...")
+            humanized = humanizer.humanize_script(raw_script, config)
+            plan["script"] = humanized
+            plan["script_raw"] = raw_script
+            print(f"    humanizer: done ({len(raw_script)} -> {len(humanized)} chars)")
+        except Exception as exc:
+            print(f"    humanizer skipped: {exc}")
+
+    # Pass 2.7 — scene director: break script into timed visual segments
+    from . import scene_director
+    try:
+        print("    scene director: breaking script into scenes...")
+        scenes = scene_director.direct_scenes(plan.get("script", ""), config, target_seconds)
+        plan["scenes"] = scenes
+        if not plan.get("search_terms"):
+            plan["search_terms"] = scene_director.scenes_to_search_terms(scenes)
+        if not plan.get("scene_prompts"):
+            plan["scene_prompts"] = scene_director.scenes_to_scene_prompts(scenes)
+        print(f"    scene director: {len(scenes)} scenes created")
+    except Exception as exc:
+        print(f"    scene director skipped: {exc}")
+
     # Pass 3 — critic gate: one revision round
     try:
         review = llm.generate_json(
@@ -268,9 +303,20 @@ def generate_video_plan(config: dict, forced_topic: str | None = None) -> dict:
     for key in ("topic", "title", "description", "tags", "script", "search_terms"):
         if key not in plan:
             raise RuntimeError(f"LLM plan missing key: {key}")
-    
+
     if "#shorts" not in plan["title"].lower():
         plan["title"] = plan["title"].rstrip() + " #Shorts"
-    
+
+    if "beats" not in plan:
+        from . import assemble
+        plan["beats"] = assemble._extract_script_beats(plan.get("script", ""))
+
+    if "scenes" not in plan:
+        try:
+            from . import scene_director
+            plan["scenes"] = scene_director.direct_scenes(plan.get("script", ""), config, target_seconds)
+        except Exception:
+            plan["scenes"] = []
+
     plan["research"] = research
     return plan

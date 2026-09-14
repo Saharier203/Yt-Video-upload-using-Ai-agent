@@ -19,7 +19,7 @@ them but a config file.
 ## What one daily run does
 
 ```
-topic  ─▶  script + metadata  ─▶  voiceover  ─▶  captions  ─▶  visuals  ─▶  render  ─▶  upload  ─▶  file & clean up
+topic  ─▶  script + metadata  ─▶  humanizer  ─▶  scene director  ─▶  critic  ─▶  voiceover  ─▶  captions  ─▶  visuals  ─▶  render + SFX  ─▶  upload  ─▶  file & clean up
 ```
 
 1. **Researches a real finding.** A research pass (on a stronger model reserved for the
@@ -29,26 +29,36 @@ topic  ─▶  script + metadata  ─▶  voiceover  ─▶  captions  ─▶  v
    names is forbidden. It reads a history of everything already covered so it never
    repeats, and real audience retention data (once there is any) steers what works.
 2. **Writes the script and metadata.** Written strictly from the researched facts:
-   hook-first, length-controlled, interactive (after the payoff the viewer gets a concrete
-   "try this today" action or a direct question, ideally both), with SEO title,
-   description, tags, an engagement comment, and a playlist assignment. A critic pass then
-   judges what the viewer learns, surprise, clarity, and interactivity; a failing draft is
-   rewritten once with the critique injected. Editorial rules (what to cover, what to ban,
-   the exact call-to-action) are configuration, not code.
-3. **Voices it** with Microsoft Edge neural TTS (free), timed per word.
-4. **Captions it** with animated word-by-word karaoke subtitles burned in by ffmpeg, plus
+   hook-first, length-controlled, with SEO title, description, tags, an engagement
+   comment, and a playlist assignment. Outputs structured `beats` array (hook/setup/
+   escalation/climax/twist/linger) with intensity levels per segment.
+3. **Humanizes it.** A dedicated pass strips AI phrases ("However, things were about to
+   take an unexpected turn" → cut), fixes repetitive sentence structures, removes
+   unnecessary explanations, and injects delivery annotations: `[pause]`, `[slower]`,
+   `[whisper]`, `[emphasis]`. Light-touch — preserves the writer's voice.
+4. **Directs scenes.** Breaks the script into timed visual segments, each with duration,
+   search terms, AI image prompt, shot type (wide/medium/close-up), and transition.
+   Hook scenes are slightly longer; climax scenes get faster cuts.
+5. **Critic judges it.** Scores on specificity, surprise, clarity, craving, interactivity,
+   flow, horror atmosphere, invention, humor, format compliance. A failing draft is
+   rewritten once with the critique injected.
+6. **Voices it** with Microsoft Edge neural TTS (free), timed per word. Delivery
+   annotations are parsed into speech adjustments: `[pause]` adds silence, `[slower]`
+   reduces rate, `[whisper]` drops pitch, `[emphasis]` boosts energy.
+7. **Captions it** with animated word-by-word karaoke subtitles burned in by ffmpeg, plus
    a hook title card on the opening frame (which becomes the Shorts thumbnail).
-5. **Illustrates it.** Generates unique AI visuals (Pollinations, keyless; Gemini as
-   second choice) animated with Ken Burns motion, interleaved with Pexels stock footage at
-   a configurable ratio, with a five-level fallback chain so a frame is never blank.
-6. **Renders** the video with crossfades, animated word-by-word captions, a music bed,
-   and an optional sonic-logo sting. Remotion (React-based rendering) is the priority
-   renderer; if Node or the Remotion project is missing, or a render fails, the engine
-   falls back to an equivalent ffmpeg pipeline so an unattended run never dies.
-7. **Uploads** to YouTube with the AI-content disclosure set automatically, posts the
-   engagement comment, and sorts the video into a themed playlist.
-8. **Files and cleans up.** Records the upload in history and deletes local working files;
-   finished videos live on YouTube, not on disk.
+8. **Illustrates it.** Per-scene clips with timing from the Scene Director. Stock-first
+   (85%) with AI accents (15%) for supernatural elements. Entity caching, visual anchors,
+   and a five-level fallback chain so a frame is never blank.
+9. **Renders with a full horror audio mix.** Voice + ambient bed + per-scene atmosphere
+   (hospital buzz, shrine wind, station hum) + foley triggers (door creaks, footsteps,
+   evidence sounds) + tension layers (sub-rumble, heartbeat, tinnitus) + stingers at
+   twists + dynamic music. Remotion renderer preferred; ffmpeg fallback ensures unattended
+   runs never die.
+10. **Uploads** to YouTube with the AI-content disclosure set automatically, posts the
+    engagement comment, and sorts the video into a themed playlist.
+11. **Files and cleans up.** Records the upload in history and deletes local working files;
+    finished videos live on YouTube, not on disk.
 
 A separate weekly pipeline (`run_weekly.py`) builds long-form countdown videos through the
 same engine, with chapters, an auto-generated thumbnail, and the week's best-performing
@@ -167,11 +177,14 @@ engine falls back to sensible defaults.
 |---|---|
 | `run_daily.py` / `run_weekly.py` | The daily and weekly orchestrators |
 | `src/script_gen.py`, `src/longform_gen.py` | Topic selection + writing; holds the editorial defaults |
-| `src/tts.py`, `src/captions.py` | Voiceover and animated captions |
-| `src/visuals.py`, `src/ai_images.py` | Stock footage and AI visuals |
-| `src/assemble.py`, `src/remotion_render.py` | Final render: Remotion first, ffmpeg fallback |
+| `src/humanizer.py` | Strip AI-isms, inject delivery annotations ([pause], [slower], [whisper], [emphasis]) |
+| `src/scene_director.py` | Break script into timed visual segments with shot types |
+| `src/tts.py`, `src/captions.py` | Voiceover (annotation-aware prosody) and animated captions |
+| `src/visuals.py`, `src/ai_images.py` | Stock footage and AI visuals (per-scene timing) |
+| `src/assemble.py`, `src/remotion_render.py` | Final render with multi-layer SFX mix: atmosphere, foley, tension, stingers |
 | `remotion/` | Remotion project (React compositions for captions, transitions, hook card) |
-| `src/upload.py`, `src/analytics.py` | YouTube upload and the retention feedback loop |
+| `src/upload.py`, `src/analytics.py` | YouTube upload and the expanded retention feedback loop |
+| `assets/sfx/` | Sound effects: ambient beds, atmospheres (13 locations), foley, tension, stingers |
 | `config.json` | Everything channel-specific |
 | `data/` | History (prevents repeats) and cached analytics |
 

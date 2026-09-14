@@ -29,20 +29,28 @@ E:\ai-horror-channel\
 │   ├── background_music.mp3    # 2-hour looped horror ambient (156 MB)
 │   ├── font.ttf                # Anton bold font for captions
 │   ├── broll/                  # Pexels video cache (auto-created)
-│   └── entities/               # AI entity image cache (auto-created)
+│   ├── entities/               # AI entity image cache (auto-created)
+│   └── sfx/                    # Sound effects library
+│       ├── ambient_beds/       # Continuous background ambience (4 files)
+│       ├── atmospheres/        # Location-specific audio (13 locations)
+│       ├── foley/              # Triggered sound effects (7 categories)
+│       ├── tension/            # Beat-synced tension layers (6 files)
+│       └── stingers/           # Impact sounds for twists/reveals (14 files)
 ├── logs/                       # Daily run logs
 ├── output/                     # Rendered videos (cleaned after upload)
 ├── data/                       # Topic history, analytics cache
 ├── src/
 │   ├── llm.py                  # LLM abstraction (Gemini primary, Pollinations fallback)
-│   ├── script_gen.py           # Research → Script → Critic (3-pass pipeline)
+│   ├── script_gen.py           # Research → Script → Humanizer → Scene Director → Critic (5-pass)
+│   ├── humanizer.py            # Strip AI-isms, inject delivery annotations
+│   ├── scene_director.py       # Break script into timed visual segments
 │   ├── visuals.py              # Stock-first footage + AI entity caching + visual anchors
 │   ├── ai_images.py            # AI image generation (Pollinations + Gemini Imagen)
-│   ├── tts.py                  # Edge TTS voiceover with word-level timing
+│   ├── tts.py                  # Edge TTS voiceover with delivery annotations + word timing
 │   ├── captions.py             # ASS karaoke captions + SRT export
-│   ├── assemble.py             # FFmpeg/Remotion video assembly
+│   ├── assemble.py             # FFmpeg/Remotion assembly + multi-layer SFX mix
 │   ├── upload.py               # YouTube Data API v3 upload
-│   ├── analytics.py            # YouTube Analytics feedback loop
+│   ├── analytics.py            # YouTube Analytics feedback loop (expanded)
 │   └── remotion_render.py      # Remotion (React) renderer
 └── remotion/                   # React/Remotion project for high-quality renders
 ```
@@ -200,34 +208,62 @@ All checks should show `[OK]`.
 
 ### 1. Research (`script_gen.py` → `llm.py` → Gemini)
 - Reviews topic history (avoids repeats)
-- Analyzes performance data (feedback loop)
+- Analyzes performance data (feedback loop with hook retention + category analysis)
 - Selects ONE documented incident from a Japanese prefecture
 - Extracts: date, location, source type, official account, witness, evidence, gap, humor line, unresolved thread
 - Output: `research.json`
 
 ### 2. Script Writing (`script_gen.py` → `llm.py` → Gemini)
 - Writes script STRICTLY from research (no invention)
-- 6-beat structure: Hook → Record → Witness → Location Today → Gap (humor) → Thread
-- ~140 words / 55 seconds
-- Critic gate: scores on specifics, surprise, clarity, craving, interactivity, format compliance
-- One revision round on failure
-- Output: `plan.json` (topic, title, description, tags, script, search_terms, scene_prompts, playlist, comment)
+- 6-beat structure: Hook → Setup → Escalation → Climax → Twist → Linger
+- ~130 words / 45 seconds
+- Outputs structured `beats` array with beat type, text, and intensity per segment
+- Output: raw `plan.json` with script + beats
 
-### 3. Voiceover (`tts.py` → Edge TTS)
+### 3. Humanizer (`humanizer.py` → `llm.py` → Gemini)
+- **NEW**: Light-touch cleanup between Writer and Critic
+- Strips AI phrases: "However, things were about to take an unexpected turn" → cut
+- Fixes repetitive sentence structures
+- Removes unnecessary explanations ("This was deeply unsettling")
+- Injects delivery annotations: `[pause]`, `[slower]`, `[whisper]`, `[emphasis]`
+- Does NOT rewrite the story — copy editor, not rewriter
+- Output: cleaned script with inline delivery markers
+
+### 4. Scene Director (`scene_director.py` → `llm.py` → Gemini)
+- **NEW**: Breaks script into timed visual segments
+- Each scene gets: beat type, narration text, duration, search terms, AI image prompt, shot type, transition
+- Per-scene durations (hook scenes slightly longer, climax scenes faster cuts)
+- Shot types: wide (establishing), medium (scene), close-up (detail), detail (object)
+- Output: `scenes` array consumed by visuals and assembly
+
+### 5. Critic Gate (`script_gen.py` → `llm.py` → Gemini)
+- Scores on: specificity, surprise, clarity, craving, interactivity, flow, horror atmosphere, invention, humor, format
+- Verdict: pass/fail with concrete revision points
+- One revision round on failure (re-humanced and re-directed after rewrite)
+- Output: final `plan.json` with all metadata
+
+### 6. Voiceover (`tts.py` → Edge TTS)
 - Microsoft Edge Neural TTS (free, unlimited)
-- Voice: `en-US-AndrewMultilingualNeural` at +5% rate, dynamic
+- Voice: `en-US-ChristopherNeural` with dynamic prosody
+- **Delivery annotations parsed**: `[pause]` → +0.6s silence, `[slower]` → -8% rate, `[whisper]` → -6Hz pitch, `[emphasis]` → +3% rate +2Hz pitch
+- Horror prosody planner: hook (slow), body (normal), tension (slower), reveal (slowest + large pre-pause), aftermath, final
 - Word-level timestamps for karaoke captions
 - Output: `narration.mp3`
 
-### 4. Captions (`captions.py` → Whisper + ASS)
+### 7. Captions (`captions.py` → ASS)
 - Word-by-word karaoke subtitles burned in via FFmpeg
 - ASS format with yellow highlight (`&H0000D7FF`)
-- SRT exported for YouTube closed captions
-- Font: Anton (bold, readable at small sizes)
+- Hook title card flashed for 1.25s on opening frame
+- Font: Arial Black, 92px (configurable)
 
-### 5. Visuals (`visuals.py` → Pexels + AI Images)
+### 8. Visuals (`visuals.py` → Pexels + AI Images)
+**Per-Scene Timing:**
+- Each scene gets its own duration from Scene Director (not uniform clips)
+- Visual continuity: scenes follow narrative arc
+
 **Stock-First (85%):**
 - Pexels API for actual location footage
+- Enhanced search terms with location context
 - Fallback chain: exact term → first word → niche fallbacks → local cache → gradient
 
 **AI Accents (15% - Supernatural Only):**
@@ -235,23 +271,71 @@ All checks should show `[OK]`.
 - Reused across all videos about that legend
 - Visual anchors (notebook/lamp/coffee) inserted between clips as transitions
 
-### 6. Assembly (`assemble.py` → FFmpeg/Remotion)
-- Normalize clips → crossfade chain → burn captions → mix audio
-- Music: ambient horror from `assets/music/` (mood-matched)
+### 9. Assembly (`assemble.py` → FFmpeg/Remotion)
+**Multi-Layer Horror Audio Mix:**
+- Voice at full volume (1.0)
+- **Ambient bed** (looped): forest_night, dread_rumble, city_distant, analog_hiss
+- **Atmosphere per scene**: location-specific audio matched to scene prompt (hospital buzz, shrine wind, station hum)
+- **Foley triggers**: door creaks, footsteps, evidence bag crinkle matched to script keywords
+- **Tension layers**: sub-rumble (escalation), heartbeat (climax), tinnitus (twist)
+- **Stingers**: impact sounds at twist/climax beats
+- **Dynamic music**: mood-matched from `assets/music/` (if available), compressed and ducked
+
+**Video:**
+- Normalize clips → crossfade chain → burn ASS captions
 - Remotion renderer preferred (React-based, higher quality)
 - FFmpeg fallback ensures unattended runs never die
 
-### 7. Upload (`upload.py` → YouTube Data API v3)
+### 10. Upload (`upload.py` → YouTube Data API v3)
 - Title, description, tags, playlist, category (24=Entertainment)
 - `containsSyntheticMedia: true` (AI voice disclosure)
 - Privacy: public (configurable)
 - Engagement comment posted automatically
+- Playlist sorting with themed categories
 - Duplicate prevention: one video per day enforced
 
-### 8. Cleanup & History
+### 11. Cleanup & History
 - Local video deleted after upload (configurable)
 - Topic saved to `data/topics_history.json`
-- Analytics cached for feedback loop
+- Analytics cached for feedback loop (12-hour TTL)
+
+---
+
+## Delivery Annotations (Humanizer → TTS)
+
+The humanizer injects inline markers that the TTS engine parses into speech adjustments:
+
+| Annotation | Effect | Use Case |
+|-----------|--------|----------|
+| `[pause]` | +0.6s silence after sentence | Before reveals, after disturbing details, final line |
+| `[slower]` | -8% speech rate | Creeping tension, describing something wrong |
+| `[whisper]` | -6Hz pitch, -5% rate | Intimate moments, secrets, quiet observations |
+| `[emphasis]` | +3% rate, +2Hz pitch | The ONE sentence per section with most impact |
+
+**Rules:**
+- Max 2-3 markers per 5 sentences (over-marking kills effect)
+- Markers stripped before Edge TTS synthesis
+- TTS horror prosody planner still applies (markers are additive)
+
+---
+
+## Sound Effects System
+
+The assembly engine uses a 5-layer SFX system, all pre-built in `assets/sfx/`:
+
+| Layer | Source | Triggers |
+|-------|--------|----------|
+| Ambient Bed | `ambient_beds/` (4 files) | Continuous, looped under entire video |
+| Atmosphere | `atmospheres/` (13 locations) | Per-scene, matched to scene prompt keywords |
+| Foley | `foley/` (7 categories) | Per-script, matched to keywords (door, footsteps, evidence, etc.) |
+| Tension | `tension/` (6 files) | Per-beat: sub_rumble (escalation), heartbeat (climax), tinnitus (twist) |
+| Stinger | `stingers/` (14 files) | At twist/climax beats (1 random stinger per video) |
+
+**Atmosphere Location Map:**
+hospital, shrine, station, tunnel, forest, apartment, basement, hotel, school, lab, city, highway, water
+
+**Foley Keyword Map:**
+door, locked, opened, closed, footsteps, thread, evidence, figure, shadow, phone, train, bell, rain, wind
 
 ---
 
@@ -441,23 +525,49 @@ Remove-Item E:\ai-horror-channel\logs -Recurse -Force
 
 ### Script
 - [ ] Real date, location, source type present
-- [ ] 6-beat structure followed
+- [ ] 6-beat structure followed (hook/setup/escalation/climax/twist/linger)
+- [ ] Structured beats array output with intensity levels
 - [ ] Dark humor line at expense of official explanation
 - [ ] One sensory detail (smell/sound/temperature)
 - [ ] One unanswered question at end
 - [ ] No CTA, no "subscribe," no "comment below"
 
+### Humanizer
+- [ ] AI phrases stripped ("However, things were about to..." → cut)
+- [ ] Repetitive sentence structures varied
+- [ ] Unnecessary explanations removed
+- [ ] Delivery annotations present: [pause], [slower], [whisper], [emphasis]
+- [ ] Max 2-3 annotations per 5 sentences
+
+### Scene Director
+- [ ] Script broken into timed visual segments
+- [ ] Per-scene durations match narrative arc (hook longer, climax faster)
+- [ ] Search terms concrete and filmable (no abstract concepts)
+- [ ] AI image prompts describe single static frames
+- [ ] Shot types assigned (wide/medium/close-up/detail)
+
 ### Visuals
+- [ ] Per-scene clip durations (not uniform)
 - [ ] 85%+ stock footage (real locations)
 - [ ] Entity images consistent per legend (cached)
 - [ ] Visual anchors appear as transitions
 - [ ] 9:16 vertical, 1080x1920, 30fps
-- [ ] Ken Burns motion on all clips
 
 ### Audio
-- [ ] Voice: AndrewMultilingualNeural, +5%, dynamic
-- [ ] Music: ambient horror, volume ~0.05
+- [ ] Voice: ChristopherNeural with dynamic prosody
+- [ ] Delivery annotations parsed (pause/slower/whisper/emphasis)
+- [ ] Ambient bed looped under entire video
+- [ ] Atmosphere per scene (location-matched)
+- [ ] Foley triggers from script keywords
+- [ ] Tension layers per beat (rumble/heartbeat/tinnitus)
+- [ ] Stinger at twist/climax
+- [ ] Music mood-matched and compressed
 - [ ] No clipping, sync with captions
+
+### Captions
+- [ ] Word-by-word karaoke highlighting
+- [ ] Hook title card on opening frame
+- [ ] Font readable at small sizes
 
 ### Metadata
 - [ ] Title < 90 chars, ends with #Shorts
@@ -468,9 +578,9 @@ Remove-Item E:\ai-horror-channel\logs -Recurse -Force
 
 ### Upload
 - [ ] Video processes without errors
-- [ ] Captions appear (SRT + burned ASS)
-- [ ] Thumbnail generated (hook frame)
+- [ ] Captions appear (burned ASS)
 - [ ] Engagement comment posted
+- [ ] Added to themed playlist
 
 ---
 
@@ -561,6 +671,7 @@ Remove-Item data, output, logs -Recurse -Force
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 2.0 | 2026-09-13 | Pipeline v2: Humanizer pass (AI-ism removal + delivery annotations), Scene Director (timed visual segments), multi-layer SFX system (atmosphere/foley/tension/stingers), structured beats, expanded analytics feedback (hook retention + category analysis) |
 | 1.0 | 2026-09-11 | Initial build: Case File Japan format, stock-first visuals, entity caching, visual anchors, no CTA, regional series structure, dark humor integration |
 
 ---

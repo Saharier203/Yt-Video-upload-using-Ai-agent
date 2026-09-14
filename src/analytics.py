@@ -64,6 +64,7 @@ def _fetch_analytics(videos: list) -> dict | None:
         metrics="views,likes,averageViewPercentage,subscribersGained",
         dimensions="video",
         filters="video==" + ",".join(v["id"] for v in videos[:200]),
+        sort="-views",
         maxResults=200,
     ).execute()
     cols = [c["name"] for c in resp.get("columnHeaders", [])]
@@ -87,7 +88,7 @@ def _fetch_public(videos: list) -> dict | None:
     from googleapiclient.discovery import build
     yt = build("youtube", "v3", developerKey=key)
     resp = yt.videos().list(
-        part="statistics", id=",".join(v["id"] for v in videos[:50])
+        part="statistics", id=",".join(v["id"] for v in videos[:200])
     ).execute()
     stats = {}
     for item in resp.get("items", []):
@@ -129,7 +130,7 @@ def _fetch_scrape(videos: list) -> dict | None:
     import re
     import requests
     stats = {}
-    for v in videos[:20]:
+    for v in videos[:50]:
         try:
             html = requests.get(
                 f"https://www.youtube.com/watch?v={v['id']}",
@@ -172,7 +173,7 @@ def get_performance(force: bool = False) -> dict | None:
 
     fresh = {
         "fetched_at": datetime.now().isoformat(timespec="seconds"),
-        "videos": [{**v, **stats[v["id"]]} for v in videos if v["id"] in stats],
+        "videos": [{**v, **(stats.get(v["id"]) or {})} for v in videos],
     }
     # retention curves for the newest few videos (only possible via OAuth analytics)
     try:
@@ -224,12 +225,42 @@ def performance_block() -> str:
             bits.append(f"half the audience gone by {ret['half_gone_pct']}% mark")
         return f"- \"{v['topic']}\": " + ", ".join(bits)
 
+    lines = []
+
     if len(scored) < 5:
-        lines = ["Results so far (small sample — treat as a weak signal):"]
+        lines.append("Results so far (small sample — treat as a weak signal):")
         lines += [fmt(*s) for s in scored]
     else:
-        lines = ["OVERPERFORMERS (make more with this emotional angle):"]
+        lines.append("OVERPERFORMERS (make more with this emotional angle):")
         lines += [fmt(*s) for s in scored[:3]]
         lines.append("UNDERPERFORMERS (avoid this flavor):")
         lines += [fmt(*s) for s in scored[-3:]]
+
+    # Retention insights
+    ret_videos = [v for v in data["videos"] if v.get("retention")]
+    if ret_videos:
+        good_hooks = [v for v in ret_videos if (v["retention"].get("hook_hold_pct") or 0) >= 60]
+        bad_hooks = [v for v in ret_videos if (v["retention"].get("hook_hold_pct") or 0) < 40 and v["retention"].get("hook_hold_pct") is not None]
+        if good_hooks:
+            hook_topics = [f'"{v["topic"]}"' for v in good_hooks[:2]]
+            lines.append(f"Hooks that WORKED (60%+ held): {', '.join(hook_topics)}")
+        if bad_hooks:
+            hook_topics = [f'"{v["topic"]}"' for v in bad_hooks[:2]]
+            lines.append(f"Hooks that LOST viewers (<40% held): {', '.join(hook_topics)} — avoid this opening style")
+
+    # Category analysis
+    categories = {}
+    for _, _, v in scored:
+        cat = v.get("category", "unknown")
+        if cat not in categories:
+            categories[cat] = []
+        categories[cat].append(v.get("views", 0))
+    if len(categories) > 1:
+        cat_avgs = {cat: sum(views) / len(views) for cat, views in categories.items()}
+        best_cat = max(cat_avgs, key=cat_avgs.get)
+        worst_cat = min(cat_avgs, key=cat_avgs.get)
+        if best_cat != worst_cat:
+            lines.append(f"Best-performing category: {best_cat} (avg {cat_avgs[best_cat]:.0f} views)")
+            lines.append(f"Worst-performing category: {worst_cat} (avg {cat_avgs[worst_cat]:.0f} views)")
+
     return "\n".join(lines)
